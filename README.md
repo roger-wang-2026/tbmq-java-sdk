@@ -4,6 +4,9 @@ An independent, community-maintained Java client for TBMQ REST APIs. It supports
 depends on Jackson. The SDK provides a generic client for the complete REST surface and strongly typed clients
 for common management operations and MQTT publishing.
 
+The Java API uses the community-owned `io.github.roger_wang_2026.tbmq.sdk` namespace. This intentionally avoids
+the `org.thingsboard` namespace so the library cannot be mistaken for an official ThingsBoard distribution.
+
 ```xml
 <dependency>
   <groupId>io.github.roger-wang-2026</groupId>
