@@ -1,17 +1,18 @@
 # TBMQ Java SDK
 
-An independent, community-maintained Java client for TBMQ REST APIs. It supports Java 8 or newer and only
-depends on Jackson. The SDK provides a generic client for the complete REST surface and strongly typed clients
-for common management operations and MQTT publishing.
+An independent, community-maintained Java 8 client generated from the TBMQ 2.4.1 OpenAPI document. The SDK
+contains strongly typed methods and models for all 112 REST operations and 100 schemas exposed by TBMQ 2.4.1.
 
 The Java API uses the community-owned `io.github.roger_wang_2026.tbmq.sdk` namespace. This intentionally avoids
 the `org.thingsboard` namespace so the library cannot be mistaken for an official ThingsBoard distribution.
+
+## Dependency
 
 ```xml
 <dependency>
   <groupId>io.github.roger-wang-2026</groupId>
   <artifactId>tbmq-java-sdk</artifactId>
-  <version>1.0.0</version>
+  <version>2.4.1</version>
 </dependency>
 ```
 
@@ -21,102 +22,64 @@ Until the artifact is published to a Maven repository, build and install it loca
 mvn clean install
 ```
 
-Create one shared client with an access token or administrator credentials:
+## Usage
+
+Create an authenticated client with the base URL and a TBMQ JWT access token:
 
 ```java
-TbmqClient client = TbmqClient.builder("https://tbmq.example.com")
-        .accessToken(System.getenv("TBMQ_TOKEN"))
-        .build();
+import io.github.roger_wang_2026.tbmq.sdk.TbmqOpenApiClient;
+import io.github.roger_wang_2026.tbmq.sdk.generated.model.NodeDrainStatus;
+import io.github.roger_wang_2026.tbmq.sdk.generated.model.PageDataShortClientSessionInfoDto;
 
-JsonNode info = client.get("/api/system/info", JsonNode.class);
+TbmqOpenApiClient client = TbmqOpenApiClient.create(
+        "https://tbmq.example.com",
+        System.getenv("TBMQ_TOKEN"));
+
+PageDataShortClientSessionInfoDto sessions = client.clientSessions()
+        .getShortClientSessionInfos(20, 0, null, null, null);
+
+NodeDrainStatus drainStatus = client.nodeDrain().getDrainStatus();
 ```
 
-Every endpoint is available through `TbmqApiRequest`, including query parameters, headers,
-arbitrary request DTOs, generic response types and asynchronous execution:
+`TbmqOpenApiClient` exposes all 20 generated controller clients by domain, including administrators,
+applications, authentication, blocked clients, sessions, integrations, MQTT credentials, REST publishing,
+node drain, retained messages, subscriptions, time series, unauthorized clients, and WebSocket resources.
+
+Create the client without a token for login and password-reset endpoints:
 
 ```java
-TbmqApiRequest request = TbmqApiRequest.builder(TbmqHttpMethod.GET, "/api/client-session")
-        .query("pageSize", 20)
-        .query("page", 0)
-        .build();
-
-TbmqApiResponse<JsonNode> response = client.execute(request, JsonNode.class);
+TbmqOpenApiClient client = TbmqOpenApiClient.create("https://tbmq.example.com");
+LoginResponse login = client.login().apiAuthLoginPost(
+        new LoginRequest().username("sysadmin@thingsboard.org").password("password"));
 ```
 
-For parameterized responses, use Jackson's `TypeReference` overload:
-
-```java
-TbmqApiResponse<List<MyDto>> response = client.execute(request,
-        new TypeReference<List<MyDto>>() {});
-```
-
-Common management domains also have discoverable, strongly typed clients:
-
-```java
-TbmqPage<MqttClientCredentials> credentials =
-        client.credentials().list(20, 0, "gateway");
-
-ClientSession session = client.sessions().get("device-a");
-client.sessions().disconnect(session.getClientId(), session.getSessionId());
-
-TbmqPage<Integration> integrations = client.integrations().list(20, 0, null);
-```
-
-The typed clients currently cover client credentials, MQTT authentication providers, client sessions,
-subscriptions, retained messages, integrations and REST MQTT publishing. Extensible
-configuration fields remain `JsonNode` so a newer broker can add fields without breaking an older SDK.
-
-Asynchronous methods require an application-owned executor, preventing blocking HTTP calls from occupying
-the JVM common pool:
-
-```java
-ExecutorService sdkExecutor = Executors.newFixedThreadPool(4);
-TbmqClient client = TbmqClient.builder("https://tbmq.example.com")
-        .accessToken(System.getenv("TBMQ_TOKEN"))
-        .executor(sdkExecutor)
-        .build();
-```
-
-Use the typed MQTT publish facade from the same client:
-
-```java
-TbmqRestPublishClient publisher = client.mqttPublish();
-RestPublishResult result = publisher.publish(RestPublishRequest.text("devices/a/commands", "reboot")
-        .qos(1)
-        .build());
-```
-
-Or let the SDK log in and repeat the request once when an access token expires:
-
-```java
-TbmqClient client = TbmqClient.builder("https://tbmq.example.com")
-        .credentials(System.getenv("TBMQ_USERNAME"), System.getenv("TBMQ_PASSWORD"))
-        .build();
-```
-
-Binary and JSON MQTT payloads are explicit:
-
-```java
-TbmqRestPublishClient publisher = client.mqttPublish();
-publisher.publish(RestPublishRequest.bytes("firmware/chunk", bytes).qos(1).build());
-
-RestPublishProperties properties = new RestPublishProperties()
-        .contentType("application/json")
-        .messageExpiryInterval(60)
-        .userProperty("source", "backend");
-publisher.publish(RestPublishRequest.json("devices/a/config", jsonNode)
-        .retain(true).properties(properties).build());
-```
-
-All 2xx responses are successful. Other responses throw `TbmqApiException`, which exposes the HTTP status
-and raw response body. The publish facade converts it to `TbmqRestPublishException` for backward compatibility.
-Only a 401 caused by an expired credential-based session is repeated once; other failures are never retried automatically.
+TBMQ uses the non-standard `X-Authorization: Bearer ...` header. The SDK generation process normalizes the
+OpenAPI security declaration, and `TbmqOpenApiClient` configures the token automatically.
 
 ## Compatibility
 
+- SDK version: 2.4.1
+- TBMQ version: 2.4.1
 - Java 8 or newer
-- TBMQ 2.4 REST endpoints
+- OpenAPI 3.1
+- HTTP implementation: OkHttp + Gson
 - No dependency on TBMQ server modules or its parent Maven project
+
+## Updating generated sources
+
+The unmodified server document is committed as `openapi/tbmq-2.4.1.json`. With a local TBMQ instance running,
+download it again and regenerate the client:
+
+```bash
+./scripts/download-openapi.sh http://localhost:8083
+JAVA_HOME=$(/usr/libexec/java_home -v 25) ./scripts/generate-openapi-client.sh
+mvn clean test
+```
+
+Generation uses OpenAPI Generator 7.26.0 with the `okhttp-gson` Java client. Generated sources target Java 8;
+only regeneration requires JDK 11 or newer because of the generator itself. The generation script maps TBMQ's
+custom OpenAPI `loginPassword` security scheme to its actual `X-Authorization` header while preserving the
+downloaded OpenAPI document unchanged.
 
 ## License
 
