@@ -56,6 +56,37 @@ LoginResponse login = client.login().apiAuthLoginPost(
 TBMQ uses the non-standard `X-Authorization: Bearer ...` header. The SDK generation process normalizes the
 OpenAPI security declaration, and `TbmqOpenApiClient` configures the token automatically.
 
+## High-throughput applications
+
+Inject one shared `OkHttpClient` and use a non-blocking token provider when the application publishes at high
+throughput. Updating the `AtomicReference` changes the token for subsequent requests without rebuilding the
+OpenAPI client or discarding pooled HTTP connections:
+
+```java
+AtomicReference<String> accessToken = new AtomicReference<>(initialToken);
+
+Dispatcher dispatcher = new Dispatcher();
+dispatcher.setMaxRequests(256);
+dispatcher.setMaxRequestsPerHost(256);
+
+OkHttpClient httpClient = new OkHttpClient.Builder()
+        .dispatcher(dispatcher)
+        .connectionPool(new ConnectionPool(50, 5, TimeUnit.MINUTES))
+        .build();
+
+TbmqOpenApiClient client = TbmqOpenApiClient.create(
+        "https://tbmq.example.com",
+        httpClient,
+        accessToken::get);
+
+// After login or refresh:
+accessToken.set(refreshedToken);
+```
+
+The token provider is invoked once per HTTP attempt and must be thread-safe, fast and non-blocking. The derived
+authenticated client shares the supplied client's dispatcher and connection pool. For fixed-token or
+unauthenticated use, call `create(baseUrl, token, httpClient)` or `create(baseUrl, httpClient)` respectively.
+
 ## Compatibility
 
 - SDK version: 2.4.1

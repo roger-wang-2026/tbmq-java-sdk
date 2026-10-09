@@ -25,6 +25,8 @@ import io.github.roger_wang_2026.tbmq.sdk.generated.api.TimeseriesControllerApi;
 import io.github.roger_wang_2026.tbmq.sdk.generated.api.UnauthorizedClientControllerApi;
 import io.github.roger_wang_2026.tbmq.sdk.generated.api.WebSocketConnectionControllerApi;
 import io.github.roger_wang_2026.tbmq.sdk.generated.api.WebSocketSubscriptionControllerApi;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
 
 /**
  * Entry point for the complete, OpenAPI-generated TBMQ 2.4.1 client.
@@ -33,6 +35,7 @@ import io.github.roger_wang_2026.tbmq.sdk.generated.api.WebSocketSubscriptionCon
  */
 public final class TbmqOpenApiClient {
 
+    private static final String AUTHORIZATION_HEADER = "X-Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final ApiClient apiClient;
@@ -43,19 +46,63 @@ public final class TbmqOpenApiClient {
 
     /** Creates an unauthenticated client, suitable for the login endpoints. */
     public static TbmqOpenApiClient create(String baseUrl) {
-        if (baseUrl == null || baseUrl.trim().isEmpty()) {
-            throw new IllegalArgumentException("baseUrl must not be blank");
-        }
-        String normalizedBaseUrl = baseUrl.trim();
-        while (normalizedBaseUrl.endsWith("/")) {
-            normalizedBaseUrl = normalizedBaseUrl.substring(0, normalizedBaseUrl.length() - 1);
-        }
-        return new TbmqOpenApiClient(new ApiClient().setBasePath(normalizedBaseUrl));
+        return new TbmqOpenApiClient(new ApiClient().setBasePath(normalizeBaseUrl(baseUrl)));
     }
 
     /** Creates a client that sends the supplied TBMQ JWT access token on every request. */
     public static TbmqOpenApiClient create(String baseUrl, String accessToken) {
         return create(baseUrl).accessToken(accessToken);
+    }
+
+    /**
+     * Creates an unauthenticated client backed by the supplied shared OkHttp client.
+     *
+     * <p>The exact {@code OkHttpClient} instance is used, so its dispatcher, connection pool, proxy, TLS,
+     * timeout and observability configuration are preserved.</p>
+     */
+    public static TbmqOpenApiClient create(String baseUrl, OkHttpClient httpClient) {
+        if (httpClient == null) {
+            throw new IllegalArgumentException("httpClient must not be null");
+        }
+        return new TbmqOpenApiClient(
+                new ApiClient(httpClient).setBasePath(normalizeBaseUrl(baseUrl)));
+    }
+
+    /** Creates a fixed-token client backed by the supplied shared OkHttp client. */
+    public static TbmqOpenApiClient create(
+            String baseUrl, String accessToken, OkHttpClient httpClient) {
+        return create(baseUrl, httpClient).accessToken(accessToken);
+    }
+
+    /**
+     * Creates a high-throughput client that resolves the access token for every HTTP attempt.
+     *
+     * <p>The derived OkHttp client shares the supplied client's dispatcher and connection pool. Updating the
+     * provider therefore changes authentication without rebuilding the client or dropping pooled connections.</p>
+     */
+    public static TbmqOpenApiClient create(
+            String baseUrl, OkHttpClient httpClient, AccessTokenProvider accessTokenProvider) {
+        if (httpClient == null) {
+            throw new IllegalArgumentException("httpClient must not be null");
+        }
+        if (accessTokenProvider == null) {
+            throw new IllegalArgumentException("accessTokenProvider must not be null");
+        }
+
+        OkHttpClient authenticatedHttpClient = httpClient.newBuilder()
+                .addInterceptor(chain -> {
+                    String accessToken = accessTokenProvider.getAccessToken();
+                    if (accessToken == null || accessToken.trim().isEmpty()) {
+                        throw new IllegalStateException("accessTokenProvider returned a blank token");
+                    }
+                    Request authenticatedRequest = chain.request().newBuilder()
+                            .header(AUTHORIZATION_HEADER, BEARER_PREFIX + accessToken.trim())
+                            .build();
+                    return chain.proceed(authenticatedRequest);
+                })
+                .build();
+
+        return create(baseUrl, authenticatedHttpClient);
     }
 
     /** Replaces the JWT access token used by subsequent requests. */
@@ -69,6 +116,17 @@ public final class TbmqOpenApiClient {
 
     public ApiClient apiClient() {
         return apiClient;
+    }
+
+    private static String normalizeBaseUrl(String baseUrl) {
+        if (baseUrl == null || baseUrl.trim().isEmpty()) {
+            throw new IllegalArgumentException("baseUrl must not be blank");
+        }
+        String normalizedBaseUrl = baseUrl.trim();
+        while (normalizedBaseUrl.endsWith("/")) {
+            normalizedBaseUrl = normalizedBaseUrl.substring(0, normalizedBaseUrl.length() - 1);
+        }
+        return normalizedBaseUrl;
     }
 
     public AdminControllerApi admins() { return new AdminControllerApi(apiClient); }
