@@ -21,6 +21,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 /** Thread-safe, high-level TBMQ client with authentication recovery and typed publish results. */
 public final class TbmqClient implements AutoCloseable {
@@ -32,6 +33,10 @@ public final class TbmqClient implements AutoCloseable {
     private final long budgetNanos;
     private final int maxPayloadBytes;
     private final Charset payloadCharset;
+    private final LongSupplier nanoClock;
+    private final long closeGraceNanos;
+    private final Object lifecycle = new Object();
+    private int activeCalls;
     private volatile boolean closed;
 
     private TbmqClient(Builder builder) {
@@ -45,6 +50,8 @@ public final class TbmqClient implements AutoCloseable {
         budgetNanos = TimeUnit.SECONDS.toNanos(builder.requestBudgetSeconds);
         maxPayloadBytes = builder.maxPayloadBytes;
         payloadCharset = builder.payloadCharset;
+        nanoClock = builder.nanoClock;
+        closeGraceNanos = TimeUnit.SECONDS.toNanos(builder.closeGraceSeconds);
         tokens = new TbmqTokenManager(builder, TbmqOpenApiClient.create(builder.baseUrl, http));
         openApi = TbmqOpenApiClient.create(builder.baseUrl, http, this::requestAccessToken);
     }
@@ -53,13 +60,14 @@ public final class TbmqClient implements AutoCloseable {
     /** Executes any generated API operation through the managed authentication and retry pipeline. */
     public <T> T execute(ApiCall<T> call) throws ApiException {
         if (call == null) { throw new IllegalArgumentException("call must not be null"); }
-        if (closed) { throw new IllegalStateException("TBMQ client is closed"); }
-        return executeOperation(() -> call.invoke(openApi));
+        beginCall();
+        try { return executeOperation(() -> call.invoke(openApi)); }
+        finally { endCall(); }
     }
 
     public TbmqPublishResult publish(TbmqPublishRequest request) {
         if (closed) { return result(TbmqPublishResult.Status.CLOSED, null, null,
-                new IllegalStateException("TBMQ client is closed")); }
+                new ClientClosedException()); }
         try {
             validate(request);
             byte[] payload = encode(request.getPayload(), payloadCharset, maxPayloadBytes);
@@ -69,15 +77,22 @@ public final class TbmqClient implements AutoCloseable {
                     .qos(request.getQos()).retain(request.isRetain());
             RestPublishResponse response = execute(api -> api.mqttPublish().publish(body));
             Integer code = response == null ? null : response.getReasonCode();
-            return new TbmqPublishResult(code == null ? TbmqPublishResult.Status.SERVICE_FAILED
+            TbmqPublishResult.Status status = code == null ? TbmqPublishResult.Status.SERVICE_FAILED
                     : code == 0 ? TbmqPublishResult.Status.ACCEPTED
                     : code == 16 ? TbmqPublishResult.Status.NO_MATCHING_SUBSCRIBERS
-                    : TbmqPublishResult.Status.BROKER_REJECTED, code, null, null, 0);
-        } catch (Throwable failure) { return failure(failure); }
+                    : TbmqPublishResult.Status.BROKER_REJECTED;
+            TbmqPublishResult.DeliveryState delivery = code == null
+                    ? TbmqPublishResult.DeliveryState.UNKNOWN
+                    : status == TbmqPublishResult.Status.ACCEPTED
+                    || status == TbmqPublishResult.Status.NO_MATCHING_SUBSCRIBERS
+                    ? TbmqPublishResult.DeliveryState.BROKER_ACCEPTED
+                    : TbmqPublishResult.DeliveryState.NOT_SENT;
+            return new TbmqPublishResult(status, code, null, null, 0, delivery);
+        } catch (Exception failure) { return failure(failure); }
     }
 
     private <T> T executeOperation(Operation<T> operation) throws ApiException {
-        long deadline = System.nanoTime() + budgetNanos;
+        long deadline = nanoClock.getAsLong() + budgetNanos;
         TbmqTokenManager.Token current = tokens.acquire();
         budget(deadline, null);
         requestToken.set(current);
@@ -125,25 +140,35 @@ public final class TbmqClient implements AutoCloseable {
         byte[] bytes = new byte[encoded.remaining()]; encoded.get(bytes); return bytes;
     }
 
-    private static void budget(long deadline, ApiException rejection) {
-        if (deadline - System.nanoTime() <= 0) { throw new BudgetExceeded(rejection); }
+    private void budget(long deadline, ApiException rejection) {
+        if (deadline - nanoClock.getAsLong() <= 0) { throw new BudgetExceeded(rejection); }
     }
 
     private static final class BudgetExceeded extends RuntimeException {
         BudgetExceeded(Throwable cause) { super("TBMQ publish budget exhausted before next attempt", cause); }
     }
 
+    private static final class ClientClosedException extends IllegalStateException {
+        ClientClosedException() { super("TBMQ client is closed"); }
+    }
+
     private TbmqPublishResult failure(Throwable failure) {
         Integer status = TbmqClientErrors.httpStatus(failure);
         TbmqPublishResult.Status value;
+        TbmqPublishResult.DeliveryState delivery = TbmqPublishResult.DeliveryState.NOT_SENT;
         long retryAfter = 0;
-        if (failure instanceof IllegalArgumentException || failure instanceof CharacterCodingException) {
+        if (failure instanceof ClientClosedException) {
+            value = TbmqPublishResult.Status.CLOSED;
+        } else if (failure instanceof IllegalArgumentException || failure instanceof CharacterCodingException) {
             value = TbmqPublishResult.Status.INVALID_REQUEST;
         } else if (failure instanceof BudgetExceeded) {
             value = TbmqPublishResult.Status.BUDGET_EXHAUSTED;
         } else if (Thread.currentThread().isInterrupted()
-                || TbmqClientErrors.has(failure, InterruptedException.class)) {
+                || TbmqTokenManager.interrupted(failure)) {
             value = TbmqPublishResult.Status.INTERRUPTED;
+            if (!(failure instanceof TbmqTokenManager.AuthFailure)) {
+                delivery = TbmqPublishResult.DeliveryState.UNKNOWN;
+            }
         } else if (failure instanceof TbmqTokenManager.AuthFailure) {
             TbmqTokenManager.AuthFailure auth = (TbmqTokenManager.AuthFailure) failure;
             value = auth.backoff ? TbmqPublishResult.Status.AUTH_BACKOFF : TbmqPublishResult.Status.AUTHENTICATION_FAILED;
@@ -157,12 +182,19 @@ public final class TbmqClient implements AutoCloseable {
         } else if (TbmqClientErrors.has(failure, java.io.InterruptedIOException.class)
                 || TbmqClientErrors.has(failure, java.util.concurrent.TimeoutException.class)) {
             value = TbmqPublishResult.Status.TIMEOUT;
+            delivery = TbmqPublishResult.DeliveryState.UNKNOWN;
         } else if (status == null && TbmqClientErrors.has(failure, ApiException.class)) {
             value = TbmqPublishResult.Status.TRANSPORT_FAILED;
+            delivery = TbmqClientErrors.connectionNotEstablished(failure)
+                    ? TbmqPublishResult.DeliveryState.NOT_SENT : TbmqPublishResult.DeliveryState.UNKNOWN;
         } else if (status != null && (status == 400 || status == 413)) {
             value = TbmqPublishResult.Status.INVALID_REQUEST;
-        } else { value = TbmqPublishResult.Status.SERVICE_FAILED; }
-        return result(value, null, status, failure, retryAfter);
+        } else {
+            value = TbmqPublishResult.Status.SERVICE_FAILED;
+            if (status == null || status >= 500) { delivery = TbmqPublishResult.DeliveryState.UNKNOWN; }
+        }
+        if (value == TbmqPublishResult.Status.AUTH_BACKOFF) { status = null; }
+        return result(value, null, status, failure, retryAfter, delivery);
     }
 
     private static long retryAfter(Throwable failure) {
@@ -188,15 +220,25 @@ public final class TbmqClient implements AutoCloseable {
 
     private static TbmqPublishResult result(TbmqPublishResult.Status value, Integer reason,
                                              Integer http, Throwable failure) {
-        return result(value, reason, http, failure, 0);
+        return result(value, reason, http, failure, 0, TbmqPublishResult.DeliveryState.NOT_SENT);
     }
     private static TbmqPublishResult result(TbmqPublishResult.Status value, Integer reason,
-                                             Integer http, Throwable failure, long retryAfter) {
-        return new TbmqPublishResult(value, reason, http, failure, retryAfter);
+                                             Integer http, Throwable failure, long retryAfter,
+                                             TbmqPublishResult.DeliveryState delivery) {
+        return new TbmqPublishResult(value, reason, http, failure, retryAfter, delivery);
     }
 
     @Override public void close() {
-        closed = true;
+        synchronized (lifecycle) {
+            closed = true;
+            long deadline = System.nanoTime() + closeGraceNanos;
+            while (ownsHttpClient && activeCalls > 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) { break; }
+                try { TimeUnit.NANOSECONDS.timedWait(lifecycle, remaining); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); break; }
+            }
+        }
         if (!ownsHttpClient) { return; }
         http.dispatcher().cancelAll();
         http.dispatcher().executorService().shutdown();
@@ -204,6 +246,17 @@ public final class TbmqClient implements AutoCloseable {
     }
 
     private interface Operation<T> { T run() throws ApiException; }
+
+    private void beginCall() {
+        synchronized (lifecycle) {
+            if (closed) { throw new ClientClosedException(); }
+            activeCalls++;
+        }
+    }
+
+    private void endCall() {
+        synchronized (lifecycle) { activeCalls--; lifecycle.notifyAll(); }
+    }
 
     @FunctionalInterface
     public interface ApiCall<T> { T invoke(TbmqOpenApiClient api) throws ApiException; }
@@ -220,7 +273,10 @@ public final class TbmqClient implements AutoCloseable {
         int refreshAheadSeconds = 60;
         int authBackoffSeconds = 5;
         int maxPayloadBytes = 1024 * 1024;
+        int closeGraceSeconds = 5;
         Charset payloadCharset = StandardCharsets.UTF_8;
+        LongSupplier wallClock = System::currentTimeMillis;
+        LongSupplier nanoClock = System::nanoTime;
 
         private Builder(String baseUrl) { this.baseUrl = baseUrl; }
         public Builder credentials(String user, String secret) { username = user; password = secret; return this; }
@@ -233,6 +289,7 @@ public final class TbmqClient implements AutoCloseable {
         public Builder authBackoff(Duration value) { authBackoffSeconds = seconds(value, "authBackoff"); return this; }
         public Builder maxPayloadBytes(int value) { maxPayloadBytes = value; return this; }
         public Builder payloadCharset(Charset value) { payloadCharset = value; return this; }
+        public Builder closeGracePeriod(Duration value) { closeGraceSeconds = nonNegativeSeconds(value, "closeGracePeriod"); return this; }
         public TbmqClient build() { return new TbmqClient(this); }
 
         void validate() {

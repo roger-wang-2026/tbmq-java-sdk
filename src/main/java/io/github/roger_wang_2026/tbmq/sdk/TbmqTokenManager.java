@@ -16,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.LongSupplier;
 
 /** Single-flight access-token renewal. Network I/O never runs while holding the coordination lock. */
 final class TbmqTokenManager {
@@ -47,6 +48,8 @@ final class TbmqTokenManager {
     private final long backoffNanos;
     private final int waitSeconds;
     private final TbmqOpenApiClient authClient;
+    private final LongSupplier wallClock;
+    private final LongSupplier nanoClock;
     private volatile Token current;
     private CompletableFuture<Token> renewal;
     private Throwable lastFailure;
@@ -62,6 +65,8 @@ final class TbmqTokenManager {
         backoffNanos = TimeUnit.SECONDS.toNanos(config.authBackoffSeconds);
         waitSeconds = config.timeoutSeconds * 2 + 5;
         this.authClient = authClient;
+        wallClock = config.wallClock;
+        nanoClock = config.nanoClock;
         current = new Token(config.accessToken, config.refreshToken, Long.MIN_VALUE);
     }
 
@@ -76,33 +81,33 @@ final class TbmqTokenManager {
             previouslyRejected = rejected == token;
         }
         if (previouslyRejected) { return renew(token, false); }
-        long now = System.currentTimeMillis();
+        long now = wallClock.getAsLong();
         if (text(token.accessToken) && (!canRenew() || token.expiresAt == Long.MAX_VALUE
                 || token.expiresAt - now > refreshAheadMillis)) { return token; }
         try { return renew(token, text(token.accessToken) && token.expiresAt > now); }
         catch (AuthFailure failure) {
             if (!Thread.currentThread().isInterrupted() && !interrupted(failure)
-                    && token.expiresAt > System.currentTimeMillis()) { return token; }
+                    && text(token.accessToken) && token.expiresAt > wallClock.getAsLong()) { return token; }
             throw failure;
         }
     }
 
     boolean isFresh(Token token) {
-        long age = System.nanoTime() - token.issuedAtNanos;
+        long age = nanoClock.getAsLong() - token.issuedAtNanos;
         return token.issuedAtNanos != Long.MIN_VALUE && age >= 0 && age < TimeUnit.SECONDS.toNanos(5);
     }
 
     void reject(Token token, ApiException failure) {
         synchronized (lock) {
             if (current != token) { return; }
-            rejected = token; rejection = failure; rejectedUntilNanos = System.nanoTime() + backoffNanos;
+            rejected = token; rejection = failure; rejectedUntilNanos = nanoClock.getAsLong() + backoffNanos;
         }
     }
 
     Token renew(Token previous) { return renew(previous, false); }
 
     private Token renew(Token previous, boolean allowStale) {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(waitSeconds);
+        long deadline = nanoClock.getAsLong() + TimeUnit.SECONDS.toNanos(waitSeconds);
         for (;;) {
             CompletableFuture<Token> pending;
             boolean leader = false;
@@ -110,10 +115,10 @@ final class TbmqTokenManager {
                 if (current != previous) { checkRejected(current); return current; }
                 checkRejected(previous);
                 if (renewal != null) {
-                    if (allowStale && previous.expiresAt > System.currentTimeMillis()) { return previous; }
+                    if (allowStale && previous.expiresAt > wallClock.getAsLong()) { return previous; }
                     pending = renewal;
                 } else {
-                    long remaining = retryAfterNanos - System.nanoTime();
+                    long remaining = retryAfterNanos - nanoClock.getAsLong();
                     if (lastFailure != null && remaining > 0) {
                         throw new AuthFailure("TBMQ authentication is in backoff", lastFailure, true, millis(remaining));
                     }
@@ -129,18 +134,20 @@ final class TbmqTokenManager {
                     }
                     return next;
                 } catch (Throwable failure) {
+                    boolean fatal = failure instanceof Error;
                     boolean callerInterrupted = interrupted(failure) || Thread.currentThread().isInterrupted();
                     synchronized (lock) {
-                        lastFailure = callerInterrupted ? null : failure;
-                        retryAfterNanos = callerInterrupted ? 0 : System.nanoTime() + backoffNanos;
+                        lastFailure = callerInterrupted || fatal ? null : failure;
+                        retryAfterNanos = callerInterrupted || fatal ? 0 : nanoClock.getAsLong() + backoffNanos;
                         renewal = null;
-                        pending.completeExceptionally(callerInterrupted ? new LeaderInterrupted(failure) : failure);
+                        pending.completeExceptionally(callerInterrupted && !fatal ? new LeaderInterrupted(failure) : failure);
                     }
+                    if (failure instanceof Error) { throw (Error) failure; }
                     throw authFailure(failure);
                 }
             }
             try {
-                long remaining = deadline - System.nanoTime();
+                long remaining = deadline - nanoClock.getAsLong();
                 if (remaining <= 0) { throw new TimeoutException(); }
                 return pending.get(remaining, TimeUnit.NANOSECONDS);
             } catch (InterruptedException failure) {
@@ -150,6 +157,7 @@ final class TbmqTokenManager {
                 throw new AuthFailure("Timed out awaiting TBMQ authentication", failure, false, 0);
             } catch (ExecutionException failure) {
                 if (failure.getCause() instanceof LeaderInterrupted) { continue; }
+                if (failure.getCause() instanceof Error) { throw (Error) failure.getCause(); }
                 throw authFailure(failure.getCause());
             }
         }
@@ -177,11 +185,11 @@ final class TbmqTokenManager {
             throw new IllegalStateException("TBMQ authentication response contains no access token");
         }
         return new Token(response.getToken(), text(response.getRefreshToken()) ? response.getRefreshToken() : previousRefresh,
-                System.nanoTime());
+                nanoClock.getAsLong());
     }
 
     private void checkRejected(Token token) {
-        long remaining = rejectedUntilNanos - System.nanoTime();
+        long remaining = rejectedUntilNanos - nanoClock.getAsLong();
         if (rejected == token && remaining > 0) {
             throw new AuthFailure("TBMQ rejected current token; authentication is in backoff", rejection, true, millis(remaining));
         }
@@ -191,7 +199,7 @@ final class TbmqTokenManager {
         return value instanceof AuthFailure ? (AuthFailure) value
                 : new AuthFailure("TBMQ authentication failed", value, false, 0);
     }
-    private static boolean interrupted(Throwable value) {
+    static boolean interrupted(Throwable value) {
         for (Throwable item : TbmqClientErrors.chain(value)) {
             if (item instanceof InterruptedException) { return true; }
             if (item instanceof java.io.InterruptedIOException
@@ -224,7 +232,9 @@ final class TbmqTokenManager {
             if (!value.has("exp") || !value.get("exp").isJsonPrimitive()
                     || !value.getAsJsonPrimitive("exp").isNumber()) { return Long.MAX_VALUE; }
             long seconds = value.get("exp").getAsBigDecimal().longValueExact();
-            return seconds <= 0 || seconds > Long.MAX_VALUE / 1000 ? Long.MAX_VALUE : seconds * 1000;
+            if (seconds > Long.MAX_VALUE / 1000) { return Long.MAX_VALUE; }
+            if (seconds < Long.MIN_VALUE / 1000) { return Long.MIN_VALUE; }
+            return seconds * 1000;
         } catch (RuntimeException ignored) { return Long.MAX_VALUE; }
     }
 }

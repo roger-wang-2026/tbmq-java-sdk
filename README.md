@@ -12,7 +12,7 @@ the `org.thingsboard` namespace so the library cannot be mistaken for an officia
 <dependency>
   <groupId>io.github.roger-wang-2026</groupId>
   <artifactId>tbmq-java-sdk</artifactId>
-  <version>2.4.1.1</version>
+  <version>2.4.1.2</version>
 </dependency>
 ```
 
@@ -51,6 +51,11 @@ authentication, budget and retry pipeline:
 PageDataShortClientSessionInfoDto sessions = client.execute(api ->
         api.clientSessions().getShortClientSessionInfos(20, 0, null, null, null));
 ```
+
+`TbmqPublishResult.getDeliveryState()` distinguishes `NOT_SENT`, `UNKNOWN`, and `BROKER_ACCEPTED`. Callers should
+only automatically retry `NOT_SENT`; retrying `UNKNOWN` may duplicate a message already accepted by TBMQ.
+Closing an SDK-owned client waits up to five seconds for active calls before cancelling them. An injected shared
+`OkHttpClient` remains application-owned and is never shut down by `TbmqClient`.
 
 For direct access to every generated endpoint, create an authenticated OpenAPI client:
 
@@ -119,7 +124,7 @@ unauthenticated use, call `create(baseUrl, token, httpClient)` or `create(baseUr
 
 ## Compatibility
 
-- SDK version: 2.4.1.1
+- SDK version: 2.4.1.2
 - TBMQ version: 2.4.1
 - Java 8 or newer
 - OpenAPI 3.1

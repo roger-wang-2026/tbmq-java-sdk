@@ -6,6 +6,8 @@ package io.github.roger_wang_2026.tbmq.sdk;
 
 /** Result of a high-level REST publish operation. Acceptance is not proof of device delivery. */
 public final class TbmqPublishResult {
+    public enum DeliveryState { NOT_SENT, UNKNOWN, BROKER_ACCEPTED }
+
     public enum Status {
         ACCEPTED, NO_MATCHING_SUBSCRIBERS, AUTHENTICATION_FAILED, AUTH_BACKOFF,
         AUTHORIZATION_FAILED, RATE_LIMITED, BUDGET_EXHAUSTED, INTERRUPTED,
@@ -17,14 +19,16 @@ public final class TbmqPublishResult {
     private final Integer httpStatus;
     private final Throwable cause;
     private final long retryAfterMillis;
+    private final DeliveryState deliveryState;
 
     TbmqPublishResult(Status status, Integer reasonCode, Integer httpStatus,
-                      Throwable cause, long retryAfterMillis) {
+                      Throwable cause, long retryAfterMillis, DeliveryState deliveryState) {
         this.status = status;
         this.reasonCode = reasonCode;
         this.httpStatus = httpStatus;
         this.cause = cause;
         this.retryAfterMillis = Math.max(0, retryAfterMillis);
+        this.deliveryState = deliveryState;
     }
 
     public Status getStatus() { return status; }
@@ -32,12 +36,11 @@ public final class TbmqPublishResult {
     public Integer getHttpStatus() { return httpStatus; }
     public Throwable getCause() { return cause; }
     public long getRetryAfterMillis() { return retryAfterMillis; }
+    public DeliveryState getDeliveryState() { return deliveryState; }
     public boolean isAccepted() { return status == Status.ACCEPTED || status == Status.NO_MATCHING_SUBSCRIBERS; }
 
     /** True when retrying may duplicate a message already accepted by TBMQ. */
     public boolean isDeliveryUnknown() {
-        if (status == Status.TRANSPORT_FAILED && TbmqClientErrors.connectionNotEstablished(cause)) { return false; }
-        return status == Status.TIMEOUT || status == Status.TRANSPORT_FAILED || status == Status.INTERRUPTED
-                || (status == Status.SERVICE_FAILED && (httpStatus == null || httpStatus >= 500));
+        return deliveryState == DeliveryState.UNKNOWN;
     }
 }

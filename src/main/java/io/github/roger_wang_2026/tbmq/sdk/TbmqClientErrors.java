@@ -34,6 +34,7 @@ final class TbmqClientErrors {
         for (Throwable item : chain(value)) {
             if (item instanceof java.io.EOFException
                     || item instanceof java.net.SocketException && !(item instanceof java.net.ConnectException)
+                    && !(item instanceof java.net.NoRouteToHostException)
                     || item instanceof java.io.InterruptedIOException) { return false; }
             if (item instanceof java.net.ConnectException || item instanceof java.net.UnknownHostException
                     || item instanceof java.net.NoRouteToHostException
