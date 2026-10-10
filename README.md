@@ -12,7 +12,7 @@ the `org.thingsboard` namespace so the library cannot be mistaken for an officia
 <dependency>
   <groupId>io.github.roger-wang-2026</groupId>
   <artifactId>tbmq-java-sdk</artifactId>
-  <version>2.4.1</version>
+  <version>2.4.1.1</version>
 </dependency>
 ```
 
@@ -23,6 +23,36 @@ mvn clean install
 ```
 
 ## Usage
+
+For publishing applications, use the thread-safe high-level client. It owns its HTTP resources unless an
+application-managed `OkHttpClient` is supplied:
+
+```java
+try (TbmqClient client = TbmqClient.builder("https://tbmq.example.com")
+        .credentials("sysadmin@thingsboard.org", "password")
+        .timeout(Duration.ofSeconds(10))
+        .requestBudget(Duration.ofSeconds(30))
+        .build()) {
+    TbmqPublishResult result = client.publish(TbmqPublishRequest.builder()
+            .topic("devices/demo/commands")
+            .payload("{\"enabled\":true}")
+            .qos(1)
+            .build());
+}
+```
+
+The high-level client provides single-flight token renewal, one bounded 401 recovery, authentication backoff,
+strict MQTT topic/payload encoding, request-budget checks, `Retry-After` parsing, and delivery-certainty metadata.
+It has no Spring dependency. When a shared `OkHttpClient` is injected, closing `TbmqClient` does not close that
+client's dispatcher or connection pool. Use `execute(api -> ...)` to call any generated endpoint through the same
+authentication, budget and retry pipeline:
+
+```java
+PageDataShortClientSessionInfoDto sessions = client.execute(api ->
+        api.clientSessions().getShortClientSessionInfos(20, 0, null, null, null));
+```
+
+For direct access to every generated endpoint, create an authenticated OpenAPI client:
 
 Create an authenticated client with the base URL and a TBMQ JWT access token:
 
@@ -89,7 +119,7 @@ unauthenticated use, call `create(baseUrl, token, httpClient)` or `create(baseUr
 
 ## Compatibility
 
-- SDK version: 2.4.1
+- SDK version: 2.4.1.1
 - TBMQ version: 2.4.1
 - Java 8 or newer
 - OpenAPI 3.1
