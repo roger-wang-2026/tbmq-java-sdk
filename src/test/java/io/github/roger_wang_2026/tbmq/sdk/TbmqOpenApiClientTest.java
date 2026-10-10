@@ -101,6 +101,8 @@ class TbmqOpenApiClientTest {
     @Test
     void rejectsBlankConnectionValues() {
         assertThrows(IllegalArgumentException.class, () -> TbmqOpenApiClient.create(" "));
+        assertThrows(IllegalArgumentException.class, () -> TbmqOpenApiClient.create("not-a-url"));
+        assertThrows(IllegalArgumentException.class, () -> TbmqOpenApiClient.create("ftp://example.com"));
         assertThrows(IllegalArgumentException.class,
                 () -> TbmqOpenApiClient.create("http://localhost:8083", " "));
         assertThrows(IllegalArgumentException.class,

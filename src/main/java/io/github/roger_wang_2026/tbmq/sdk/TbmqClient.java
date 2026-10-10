@@ -120,24 +120,30 @@ public final class TbmqClient implements AutoCloseable {
         return token.accessToken;
     }
 
-    private static void validate(TbmqPublishRequest value) throws CharacterCodingException {
+    private static void validate(TbmqPublishRequest value) {
         if (value == null || value.getTopic() == null || value.getTopic().isEmpty()
                 || value.getTopic().indexOf('\u0000') >= 0 || value.getTopic().contains("+")
                 || value.getTopic().contains("#") || value.getPayload() == null
                 || value.getQos() < 0 || value.getQos() > 2) {
-            throw new IllegalArgumentException("Publish requires a topic, payload and QoS 0..2");
+            throw new InvalidPublishRequestException("Publish requires a topic, payload and QoS 0..2");
         }
         if (encode(value.getTopic(), StandardCharsets.UTF_8, 65535).length > 65535) {
-            throw new IllegalArgumentException("MQTT topic exceeds 65535 UTF-8 bytes");
+            throw new InvalidPublishRequestException("MQTT topic exceeds 65535 UTF-8 bytes");
         }
     }
 
-    private static byte[] encode(String value, Charset charset, int limit) throws CharacterCodingException {
-        if (value.length() > limit) { throw new IllegalArgumentException("Value exceeds configured byte limit"); }
-        ByteBuffer encoded = charset.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT).encode(CharBuffer.wrap(value));
-        if (encoded.remaining() > limit) { throw new IllegalArgumentException("Value exceeds configured byte limit"); }
-        byte[] bytes = new byte[encoded.remaining()]; encoded.get(bytes); return bytes;
+    private static byte[] encode(String value, Charset charset, int limit) {
+        if (value.length() > limit) { throw new InvalidPublishRequestException("Value exceeds configured byte limit"); }
+        try {
+            ByteBuffer encoded = charset.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).encode(CharBuffer.wrap(value));
+            if (encoded.remaining() > limit) {
+                throw new InvalidPublishRequestException("Value exceeds configured byte limit");
+            }
+            byte[] bytes = new byte[encoded.remaining()]; encoded.get(bytes); return bytes;
+        } catch (CharacterCodingException failure) {
+            throw new InvalidPublishRequestException("Value cannot be encoded with the configured charset", failure);
+        }
     }
 
     private void budget(long deadline, ApiException rejection) {
@@ -159,7 +165,7 @@ public final class TbmqClient implements AutoCloseable {
         long retryAfter = 0;
         if (failure instanceof ClientClosedException) {
             value = TbmqPublishResult.Status.CLOSED;
-        } else if (failure instanceof IllegalArgumentException || failure instanceof CharacterCodingException) {
+        } else if (failure instanceof InvalidPublishRequestException) {
             value = TbmqPublishResult.Status.INVALID_REQUEST;
         } else if (failure instanceof BudgetExceeded) {
             value = TbmqPublishResult.Status.BUDGET_EXHAUSTED;
@@ -294,6 +300,7 @@ public final class TbmqClient implements AutoCloseable {
 
         void validate() {
             if (baseUrl == null || baseUrl.trim().isEmpty()) { throw new IllegalArgumentException("baseUrl must not be blank"); }
+            TbmqOpenApiClient.normalizeBaseUrl(baseUrl);
             if ((accessToken == null || accessToken.trim().isEmpty())
                     && (refreshToken == null || refreshToken.trim().isEmpty())
                     && (username == null || username.trim().isEmpty() || password == null || password.trim().isEmpty())) {

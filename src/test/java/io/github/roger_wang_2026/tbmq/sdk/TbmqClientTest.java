@@ -78,6 +78,24 @@ class TbmqClientTest {
                 .timeout(Duration.ofSeconds(10)).requestBudget(Duration.ofSeconds(9)).build());
     }
 
+    @Test void rejectsInvalidBaseUrlAtBuildTime() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TbmqClient.builder("not-a-url").accessToken("token").build());
+        assertThrows(IllegalArgumentException.class,
+                () -> TbmqClient.builder("ftp://example.com").accessToken("token").build());
+    }
+
+    @Test void interceptorIllegalArgumentExceptionHasUnknownDeliveryOutcome() {
+        OkHttpClient http = new OkHttpClient.Builder().addInterceptor(chain -> {
+            throw new IllegalArgumentException("internal interceptor failure");
+        }).build();
+        try (TbmqClient client = base().accessToken("token").httpClient(http).build()) {
+            TbmqPublishResult result = client.publish(request());
+            assertEquals(TbmqPublishResult.Status.SERVICE_FAILED, result.getStatus());
+            assertEquals(TbmqPublishResult.DeliveryState.UNKNOWN, result.getDeliveryState());
+        } finally { shutdown(http); }
+    }
+
     @Test void firstLoginFailureKeepsAuthenticationCauseAndStatus() {
         server.enqueue(json(403, "{\"message\":\"denied\"}"));
         try (TbmqClient client = base().credentials("admin@example.com", "wrong").build()) {

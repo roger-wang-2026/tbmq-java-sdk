@@ -12,7 +12,7 @@ the `org.thingsboard` namespace so the library cannot be mistaken for an officia
 <dependency>
   <groupId>io.github.roger-wang-2026</groupId>
   <artifactId>tbmq-java-sdk</artifactId>
-  <version>2.4.1.2</version>
+  <version>2.4.1.3</version>
 </dependency>
 ```
 
@@ -124,7 +124,7 @@ unauthenticated use, call `create(baseUrl, token, httpClient)` or `create(baseUr
 
 ## Compatibility
 
-- SDK version: 2.4.1.2
+- SDK version: 2.4.1.3
 - TBMQ version: 2.4.1
 - Java 8 or newer
 - OpenAPI 3.1

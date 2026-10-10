@@ -26,6 +26,8 @@ import io.github.roger_wang_2026.tbmq.sdk.generated.api.UnauthorizedClientContro
 import io.github.roger_wang_2026.tbmq.sdk.generated.api.WebSocketConnectionControllerApi;
 import io.github.roger_wang_2026.tbmq.sdk.generated.api.WebSocketSubscriptionControllerApi;
 import okhttp3.OkHttpClient;
+import java.net.URI;
+import java.net.URISyntaxException;
 import okhttp3.Request;
 
 /**
@@ -118,13 +120,24 @@ public final class TbmqOpenApiClient {
         return apiClient;
     }
 
-    private static String normalizeBaseUrl(String baseUrl) {
+    static String normalizeBaseUrl(String baseUrl) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) {
             throw new IllegalArgumentException("baseUrl must not be blank");
         }
         String normalizedBaseUrl = baseUrl.trim();
         while (normalizedBaseUrl.endsWith("/")) {
             normalizedBaseUrl = normalizedBaseUrl.substring(0, normalizedBaseUrl.length() - 1);
+        }
+        try {
+            URI uri = new URI(normalizedBaseUrl);
+            String scheme = uri.getScheme();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    || uri.getHost() == null || uri.getUserInfo() != null
+                    || uri.getQuery() != null || uri.getFragment() != null) {
+                throw new IllegalArgumentException("baseUrl must be an absolute HTTP(S) URL");
+            }
+        } catch (URISyntaxException failure) {
+            throw new IllegalArgumentException("baseUrl must be an absolute HTTP(S) URL", failure);
         }
         return normalizedBaseUrl;
     }
