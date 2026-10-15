@@ -22,6 +22,40 @@ Until the artifact is published to a Maven repository, build and install it loca
 mvn clean install
 ```
 
+## Publishing to Maven Central
+
+The `Publish to Maven Central` workflow publishes stable GitHub Releases automatically. It can also be
+started manually with an existing tag. The tag must match the POM version and contain the publishing
+configuration; older tags such as `v2.4.1.3` predate this workflow and cannot be published with it as-is.
+
+Before the first publication:
+
+1. Register at [Central Portal](https://central.sonatype.com/) and verify the namespace
+   `io.github.roger-wang-2026` for this GitHub account.
+2. Generate a Central Portal user token (its username and password are publishing credentials).
+3. Create a GPG signing key and publish its public key to a publicly accessible keyserver.
+4. Create the GitHub Actions environment `maven-central` and add these environment secrets:
+
+| Secret | Value |
+| --- | --- |
+| `MAVEN_CENTRAL_USERNAME` | Central Portal token username |
+| `MAVEN_CENTRAL_PASSWORD` | Central Portal token password |
+| `GPG_PRIVATE_KEY` | ASCII-armored signing private key, including the BEGIN/END lines |
+| `GPG_PASSPHRASE` | Signing key passphrase |
+
+Set the next unpublished version in `pom.xml`, commit it together with this workflow, push the matching
+`v<version>` tag, and publish its GitHub Release. The workflow tests the project, creates sources and
+Javadoc JARs, signs the artifacts, and waits for Central publication to finish. Central versions are
+immutable: use a new version after publication, rather than moving an existing tag.
+
+To validate the release build locally without signing or uploading:
+
+```bash
+mvn -Pcentral-release -Dgpg.skip=true clean verify
+```
+
+See [Sonatype's Maven publishing documentation](https://central.sonatype.org/publish/publish-portal-maven/).
+
 ## Usage
 
 For publishing applications, use the thread-safe high-level client. It owns its HTTP resources unless an
