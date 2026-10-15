@@ -25,8 +25,9 @@ mvn clean install
 ## Publishing to Maven Central
 
 The `Publish to Maven Central` workflow publishes stable GitHub Releases automatically. It can also be
-started manually with an existing tag. The tag must match the POM version and contain the publishing
-configuration; older tags such as `v2.4.1.3` predate this workflow and cannot be published with it as-is.
+started manually with an existing tag. The tag must match the POM version. For older tags such as
+`v2.4.1.3`, the workflow supplies missing developer metadata and the Central publishing profile from
+the workflow revision, while keeping the tagged SDK sources, dependencies and version unchanged.
 
 Before the first publication:
 

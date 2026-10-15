@@ -33,10 +33,36 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]] || { echo 'Expected a stable version tag'; exit 1; }
+          cp pom.xml "$RUNNER_TEMP/central-publishing-pom.xml"
           git checkout --detach "refs/tags/$RELEASE_TAG"
           VERSION=$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("pom.xml").getroot().find("{http://maven.apache.org/POM/4.0.0}version").text)')
           [[ "$RELEASE_TAG" == "v$VERSION" ]] || { echo 'Tag and POM version must match'; exit 1; }
-          python3 -c 'import xml.etree.ElementTree as E; n={"m":"http://maven.apache.org/POM/4.0.0"}; p=E.parse("pom.xml"); assert any(x.text == "central-release" for x in p.findall("m:profiles/m:profile/m:id", n)), "Tag predates Central publishing configuration"'
+      - name: Supply publishing metadata for older tags
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import copy
+          import os
+          import xml.etree.ElementTree as E
+          namespace = 'http://maven.apache.org/POM/4.0.0'
+          E.register_namespace('', namespace)
+          E.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+          n = {'m': namespace}
+          target = E.parse('pom.xml')
+          template = E.parse(os.path.join(os.environ['RUNNER_TEMP'], 'central-publishing-pom.xml'))
+          for field in ('groupId', 'artifactId'):
+              assert target.find('m:' + field, n).text == template.find('m:' + field, n).text
+          if target.find('m:developers', n) is None:
+              target.getroot().append(copy.deepcopy(template.find('m:developers', n)))
+          profiles = target.find('m:profiles', n)
+          if profiles is None:
+              profiles = E.SubElement(target.getroot(), '{' + namespace + '}profiles')
+          if not any(p.find('m:id', n).text == 'central-release' for p in profiles):
+              profile = next(p for p in template.findall('m:profiles/m:profile', n)
+                             if p.find('m:id', n).text == 'central-release')
+              profiles.append(copy.deepcopy(profile))
+          target.write('pom.xml', encoding='utf-8', xml_declaration=True)
+          PY
       - name: Set up Java and signing
         uses: actions/setup-java@v4
         with:
