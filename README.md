@@ -16,7 +16,9 @@ the `org.thingsboard` namespace so the library cannot be mistaken for an officia
 </dependency>
 ```
 
-Until the artifact is published to a Maven repository, build and install it locally:
+Version 2.4.1.3 is available from Maven Central. Add the dependency above; no local SDK installation is required.
+
+To build and install the SDK from source instead:
 
 ```bash
 mvn clean install
@@ -79,13 +81,23 @@ try (TbmqClient client = TbmqClient.builder("https://tbmq.example.com")
 The high-level client provides single-flight token renewal, one bounded 401 recovery, authentication backoff,
 strict MQTT topic/payload encoding, request-budget checks, `Retry-After` parsing, and delivery-certainty metadata.
 It has no Spring dependency. When a shared `OkHttpClient` is injected, closing `TbmqClient` does not close that
-client's dispatcher or connection pool. Use `execute(api -> ...)` to call any generated endpoint through the same
+client's dispatcher or connection pool. Use `execute(api -> ...)` to call a synchronous generated endpoint through the same
 authentication, budget and retry pipeline:
 
 ```java
 PageDataShortClientSessionInfoDto sessions = client.execute(api ->
         api.clientSessions().getShortClientSessionInfos(20, 0, null, null, null));
 ```
+
+`execute()` supports synchronous calls only. Its callback must complete the HTTP request on the calling
+thread before returning. Authentication uses a `ThreadLocal` that is cleared when the operation finishes.
+Do not call generated `*Async()` methods, call `enqueue()`, switch threads, or return an unexecuted `Call`
+inside the callback. An asynchronous request runs on an OkHttp worker thread without that token context
+and can fail with `IllegalStateException`; it is also outside the managed 401 recovery, budget checks and
+active-call tracking used for shutdown.
+
+For generated asynchronous APIs, use a separate `TbmqOpenApiClient` with a fixed token or a thread-safe
+token provider. The application must handle token renewal, retries and asynchronous request lifecycle.
 
 `TbmqPublishResult.getDeliveryState()` distinguishes `NOT_SENT`, `UNKNOWN`, and `BROKER_ACCEPTED`. Callers should
 only automatically retry `NOT_SENT`; retrying `UNKNOWN` may duplicate a message already accepted by TBMQ.

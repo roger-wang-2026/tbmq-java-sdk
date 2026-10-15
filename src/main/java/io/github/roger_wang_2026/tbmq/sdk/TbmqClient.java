@@ -57,7 +57,15 @@ public final class TbmqClient implements AutoCloseable {
     }
 
     public static Builder builder(String baseUrl) { return new Builder(baseUrl); }
-    /** Executes any generated API operation through the managed authentication and retry pipeline. */
+    /**
+     * Executes a synchronous generated API operation through the managed authentication and retry pipeline.
+     *
+     * <p>The callback must execute and complete the HTTP request on the calling thread before returning.
+     * Authentication is bound to that thread for the duration of this invocation. Do not call generated
+     * {@code *Async} methods, enqueue a request, switch threads, or return an unexecuted {@code okhttp3.Call}
+     * from the callback. Such requests are outside this method's authentication, retry, budget and
+     * lifecycle management and may fail with {@link IllegalStateException} when resolving the token.</p>
+     */
     public <T> T execute(ApiCall<T> call) throws ApiException {
         if (call == null) { throw new IllegalArgumentException("call must not be null"); }
         beginCall();
@@ -264,6 +272,10 @@ public final class TbmqClient implements AutoCloseable {
         synchronized (lifecycle) { activeCalls--; lifecycle.notifyAll(); }
     }
 
+    /**
+     * A synchronous API callback that completes its HTTP request on the invoking thread.
+     * See {@link TbmqClient#execute(ApiCall)} for the supported execution boundary.
+     */
     @FunctionalInterface
     public interface ApiCall<T> { T invoke(TbmqOpenApiClient api) throws ApiException; }
 
